@@ -91,7 +91,8 @@ class SRepHypothesisTestingWidget(ScriptedLoadableModuleWidget):
     """
     try:
       self.logic.run(
-        self.ui.inputCSV.currentPath
+        self.ui.inputCSV.currentPath,
+        self.ui.outputDirectory.directory
       )
     except Exception as e:
       slicer.util.errorDisplay("Failed to compute results: {}".format(e))
@@ -411,9 +412,6 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
 
     frames = [[],[],[],[],[]]
 
-    out_pts = vtk.vtkPoints()
-    out_pd = vtk.vtkPolyData()
-
     # Build fitted frames for interior points
     for tau2 in [0,1]:
         for theta in range(24):
@@ -492,6 +490,11 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
 
     # Build features from frames
     features = []
+
+    out_pts = vtk.vtkPoints()
+    out_cells = vtk.vtkCellArray()
+    out_pd = vtk.vtkPolyData()
+    feat_to_pts_map = []
     # Start with interior points
     # Features are
     #   Location x change in the theta direction (length and direction)
@@ -508,6 +511,11 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             curr_frame = frames[levels.index(0)][curr_linear]
             if is_spine_extension(curr_linear) or is_repeated(curr_linear):
                 continue
+            ind = out_pts.InsertNextPoint(curr_frame.x)
+            vert = vtk.vtkVertex()
+            vert.GetPointIds().SetId(0,ind)
+            out_cells.InsertNextCell(vert)
+
 
             # Location x change in the theta direction (length and direction)
             theta_p1 = theta_tau_to_linear(theta+1,tau1)
@@ -523,6 +531,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                 v = (frame_theta_p1.x - frame_theta_m1.x) / 2 
             r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
             features = features + [lat.value, lon.value, r.value] 
+            feat_to_pts_map.append(ind)
 
             # Location x change in the tau1 direction (length and direction)
             tau1_p1 = theta_tau_to_linear(theta,tau1+0.5)
@@ -539,7 +548,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                 v = (frame_tau1_p1.x - frame_tau1_m1.x) / 2
             r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
             features = features + [lat.value, lon.value, r.value]
-            # print(features)
+            feat_to_pts_map.append(ind)
 
             # Curvatures in the theta direction, i.e., rotations per unit distance
             frame_theta_p1_cob = frame_theta_p1.in_basis(curr_frame)
@@ -556,6 +565,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             rotvec = rot.as_rotvec()
             r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
             features = features + [lat.value, lon.value, r.value/d]
+            feat_to_pts_map.append(ind)
 
             # Curvatures in the tau1 direction, i.e., rotations per unit distance
             frame_tau1_p1_cob = frame_tau1_p1.in_basis(curr_frame)
@@ -572,12 +582,14 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             rotvec = rot.as_rotvec()
             r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
             features = features + [lat.value, lon.value, r.value/d]
+            feat_to_pts_map.append(ind)
 
             # Northside spoke (length and direction)
             # No need for a new linear index since north is the "default"
             north_spoke = radii[curr_linear]*dirs[:,curr_linear]
             r, lat, lon = cartesian_to_spherical(north_spoke[0],north_spoke[1],north_spoke[2])
             features = features + [lat.value, lon.value, r.value]
+            feat_to_pts_map.append(ind)
 
             # Northside spoke’s frame curvature between skeleton and boundary
             north_spoke_frame = frames[levels.index(1)][curr_linear]
@@ -586,6 +598,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             rotvec = rot.as_rotvec()
             r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
             features = features + [lat.value, lon.value, r.value/radii[curr_linear]]
+            feat_to_pts_map.append(ind)
 
             # Southside spoke (length and direction)	
             # Need a new index for south with tau2 = 1
@@ -593,6 +606,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             south_spoke = radii[south_spoke_linear]*dirs[:,south_spoke_linear]
             r, lat, lon = cartesian_to_spherical(south_spoke[0],south_spoke[1],south_spoke[2])
             features = features + [lat.value, lon.value, r.value]
+            feat_to_pts_map.append(ind)
 
             # Southside spoke’s frame curvature between skeleton and boundary
             south_spoke_frame = frames[levels.index(1)][south_spoke_linear]
@@ -601,6 +615,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             rotvec = rot.as_rotvec()
             r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
             features = features + [lat.value, lon.value, r.value/radii[south_spoke_linear]]
+            feat_to_pts_map.append(ind)
 
     # (61-6) points * 24 features
     assert len(features) == 55*24
@@ -614,6 +629,10 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
     for theta in range(24):
         curr_linear = crest_to_linear(theta)
         curr_frame = frames[0][curr_linear]
+        ind = out_pts.InsertNextPoint(curr_frame.x)
+        vert = vtk.vtkVertex()
+        vert.GetPointIds().SetId(0,ind)
+        out_cells.InsertNextCell(vert)
 
         # Location x change in the theta direction (length and direction)
         theta_plus = crest_to_linear(theta + 1)
@@ -623,6 +642,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
         v = (frame_plus.x - frame_minus.x) / 2
         r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
         features = features + [lat.value, lon.value, r.value] 
+        feat_to_pts_map.append(ind)
         
         # Curvatures in the theta direction, i.e., rotations per unit distance
         frame_plus_cob = frame_plus.in_basis(curr_frame)
@@ -632,11 +652,13 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
         rotvec = rot.as_rotvec()
         r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
         features = features + [lat.value, lon.value, r.value/d]
+        feat_to_pts_map.append(ind)
 
         # Spoke (length and direction)
         spoke = radii[curr_linear]*dirs[:,curr_linear]
         r, lat, lon = cartesian_to_spherical(spoke[0],spoke[1],spoke[2])
         features = features + [lat.value, lon.value, r.value]
+        feat_to_pts_map.append(ind)
 
         # Spoke’s frame curvature between skeleton and boundary
         spoke_frame = frames[levels.index(1)][curr_linear]
@@ -645,6 +667,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
         rotvec = rot.as_rotvec()
         r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
         features = features + [lat.value, lon.value, r.value/radii[curr_linear]]
+        feat_to_pts_map.append(ind)
 
     # Previous + 24 points * 12 features
     assert len(features) == 55*24 + 24*12
@@ -663,6 +686,10 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             curr_frame = frames[levels.index(0)][curr_linear]
             if not is_spine_extension(curr_linear):
                 continue
+            ind = out_pts.InsertNextPoint(curr_frame.x)
+            vert = vtk.vtkVertex()
+            vert.GetPointIds().SetId(0,ind)
+            out_cells.InsertNextCell(vert)
 
             # Location x change in the tau1 direction (length and direction)
             tau1_p1 = theta_tau_to_linear(theta,tau1+0.5)
@@ -679,6 +706,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                 v = (frame_tau1_p1.x - frame_tau1_m1.x) / 2
             r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
             features = features + [lat.value, lon.value, r.value]
+            feat_to_pts_map.append(ind)
 
             # Curvatures in the tau1 direction, i.e., rotations per unit distance
             frame_tau1_p1_cob = frame_tau1_p1.in_basis(curr_frame)
@@ -695,12 +723,14 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             rotvec = rot.as_rotvec()
             r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
             features = features + [lat.value, lon.value, r.value/d]
+            feat_to_pts_map.append(ind)
 
             # Northside spoke (length and direction)
             # No need for a new linear index since north is the "default"
             north_spoke = radii[curr_linear]*dirs[:,curr_linear]
             r, lat, lon = cartesian_to_spherical(north_spoke[0],north_spoke[1],north_spoke[2])
             features = features + [lat.value, lon.value, r.value]
+            feat_to_pts_map.append(ind)
 
             # # Northside spoke’s frame curvature between skeleton and boundary
             north_spoke_frame = frames[levels.index(1)][curr_linear]
@@ -709,6 +739,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             rotvec = rot.as_rotvec()
             r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
             features = features + [lat.value, lon.value, r.value/radii[curr_linear]]
+            feat_to_pts_map.append(ind)
 
             # # Southside spoke (length and direction)	
             # # Need a new index for south with tau2 = 1
@@ -716,6 +747,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             south_spoke = radii[south_spoke_linear]*dirs[:,south_spoke_linear]
             r, lat, lon = cartesian_to_spherical(south_spoke[0],south_spoke[1],south_spoke[2])
             features = features + [lat.value, lon.value, r.value]
+            feat_to_pts_map.append(ind)
 
             # # Southside spoke’s frame curvature between skeleton and boundary
             south_spoke_frame = frames[levels.index(1)][south_spoke_linear]
@@ -724,6 +756,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             rotvec = rot.as_rotvec()
             r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
             features = features + [lat.value, lon.value, r.value/radii[south_spoke_linear]]
+            feat_to_pts_map.append(ind)
 
 
     # Previous + 6 points * 18 features
@@ -741,6 +774,10 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     curr_frame = frames[levels.index(level)][curr_linear]
                     if not is_spine_extension(curr_linear):
                         continue
+                    ind = out_pts.InsertNextPoint(curr_frame.x)
+                    vert = vtk.vtkVertex()
+                    vert.GetPointIds().SetId(0,ind)
+                    out_cells.InsertNextCell(vert)
 
                     # Location x change in the tau1 direction (length and direction)
                     tau1_p1 = theta_tau_to_linear(theta,tau1+0.5)
@@ -757,6 +794,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                         v = (frame_tau1_p1.x - frame_tau1_m1.x) / 2
                     r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
                     features = features + [lat.value, lon.value, r.value]
+                    feat_to_pts_map.append(ind)
 
                     # Curvatures in the tau1 direction, i.e., rotations per unit distance
                     frame_tau1_p1_cob = frame_tau1_p1.in_basis(curr_frame)
@@ -773,6 +811,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     rotvec = rot.as_rotvec()
                     r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
                     features = features + [lat.value, lon.value, r.value/d]
+                    feat_to_pts_map.append(ind)
 
     # Previous + 36 points * 6 features
     assert len(features) == 55*24 + 24*12 + 6*18 + 36*6
@@ -785,6 +824,10 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
         for level in [0.25,0.5,0.75]:
             curr_linear = crest_to_linear(theta)
             curr_frame = frames[levels.index(level)][curr_linear]
+            ind = out_pts.InsertNextPoint(curr_frame.x)
+            vert = vtk.vtkVertex()
+            vert.GetPointIds().SetId(0,ind)
+            out_cells.InsertNextCell(vert)
 
             # Location x change in the theta direction (length and direction)
             theta_plus = crest_to_linear(theta + 1)
@@ -794,6 +837,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             v = (frame_plus.x - frame_minus.x) / 2
             r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
             features = features + [lat.value, lon.value, r.value] 
+            feat_to_pts_map.append(ind)
             
             # Curvatures in the theta direction, i.e., rotations per unit distance
             frame_plus_cob = frame_plus.in_basis(curr_frame)
@@ -803,6 +847,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             rotvec = rot.as_rotvec()
             r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
             features = features + [lat.value, lon.value, r.value/d]
+            feat_to_pts_map.append(ind)
 
     # Previous + 72 points * 6 features
     assert len(features) == 55*24 + 24*12 + 6*18 + 36*6 + 72*6
@@ -821,6 +866,10 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     curr_frame = frames[levels.index(level)][curr_linear]
                     if is_spine_extension(curr_linear) or is_repeated(curr_linear):
                         continue
+                    ind = out_pts.InsertNextPoint(curr_frame.x)
+                    vert = vtk.vtkVertex()
+                    vert.GetPointIds().SetId(0,ind)
+                    out_cells.InsertNextCell(vert)
 
                     # Location x change in the theta direction (length and direction)
                     theta_p1 = theta_tau_to_linear(theta+1,tau1,tau2)
@@ -836,6 +885,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                         v = (frame_theta_p1.x - frame_theta_m1.x) / 2 
                     r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
                     features = features + [lat.value, lon.value, r.value] 
+                    feat_to_pts_map.append(ind)
 
                     # Location x change in the tau1 direction (length and direction)
                     tau1_p1 = theta_tau_to_linear(theta,tau1+0.5,tau2)
@@ -852,6 +902,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                         v = (frame_tau1_p1.x - frame_tau1_m1.x) / 2
                     r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
                     features = features + [lat.value, lon.value, r.value]
+                    feat_to_pts_map.append(ind)
 
                     # Curvatures in the theta direction, i.e., rotations per unit distance
                     frame_theta_p1_cob = frame_theta_p1.in_basis(curr_frame)
@@ -868,6 +919,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     rotvec = rot.as_rotvec()
                     r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
                     features = features + [lat.value, lon.value, r.value/d]
+                    feat_to_pts_map.append(ind)
 
                     # Curvatures in the tau1 direction, i.e., rotations per unit distance
                     frame_tau1_p1_cob = frame_tau1_p1.in_basis(curr_frame)
@@ -884,6 +936,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     rotvec = rot.as_rotvec()
                     r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
                     features = features + [lat.value, lon.value, r.value/d]
+                    feat_to_pts_map.append(ind)
 
     # Previous + 330 points * 12 features
     assert len(features) == 55*24 + 24*12 + 6*18 + 36*6 + 72*6 + 330*12
@@ -902,6 +955,10 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     curr_frame = frames[levels.index(level)][curr_linear]
                     if is_spine_extension(curr_linear) or is_repeated(curr_linear):
                         continue
+                    ind = out_pts.InsertNextPoint(curr_frame.x)
+                    vert = vtk.vtkVertex()
+                    vert.GetPointIds().SetId(0,ind)
+                    out_cells.InsertNextCell(vert)
 
                     # Location x change in the theta direction (length and direction)
                     theta_p1 = theta_tau_to_linear(theta+1,tau1,tau2)
@@ -917,6 +974,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                         v = (frame_theta_p1.x - frame_theta_m1.x) / 2 
                     r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
                     features = features + [lat.value, lon.value, r.value] 
+                    feat_to_pts_map.append(ind)
 
                     # Location x change in the tau1 direction (length and direction)
                     tau1_p1 = theta_tau_to_linear(theta,tau1+0.5,tau2)
@@ -933,6 +991,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                         v = (frame_tau1_p1.x - frame_tau1_m1.x) / 2
                     r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
                     features = features + [lat.value, lon.value, r.value]
+                    feat_to_pts_map.append(ind)
 
                     # Curvatures in the theta direction, i.e., rotations per unit distance
                     frame_theta_p1_cob = frame_theta_p1.in_basis(curr_frame)
@@ -949,6 +1008,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     rotvec = rot.as_rotvec()
                     r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
                     features = features + [lat.value, lon.value, r.value/d]
+                    feat_to_pts_map.append(ind)
 
                     # Curvatures in the tau1 direction, i.e., rotations per unit distance
                     frame_tau1_p1_cob = frame_tau1_p1.in_basis(curr_frame)
@@ -965,6 +1025,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     rotvec = rot.as_rotvec()
                     r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
                     features = features + [lat.value, lon.value, r.value/d]
+                    feat_to_pts_map.append(ind)
                     
     # Spine end/extensions boundary points
     for theta in range(24):
@@ -975,6 +1036,10 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     curr_frame = frames[levels.index(level)][curr_linear]
                     if not is_spine_extension(curr_linear):
                         continue
+                    ind = out_pts.InsertNextPoint(curr_frame.x)
+                    vert = vtk.vtkVertex()
+                    vert.GetPointIds().SetId(0,ind)
+                    out_cells.InsertNextCell(vert)
 
                     # Location x change in the theta direction (length and direction)
                     theta_p1 = theta_tau_to_linear(theta+1,tau1+0.5,tau2)
@@ -990,6 +1055,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                         v = (frame_theta_p1.x - frame_theta_m1.x) / 2 
                     r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
                     features = features + [lat.value, lon.value, r.value] 
+                    feat_to_pts_map.append(ind)
 
                     # Location x change in the tau1 direction (length and direction)
                     tau1_p1 = theta_tau_to_linear(theta,tau1+0.5,tau2)
@@ -1006,6 +1072,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                         v = (frame_tau1_p1.x - frame_tau1_m1.x) / 2
                     r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
                     features = features + [lat.value, lon.value, r.value]
+                    feat_to_pts_map.append(ind)
 
                     # Curvatures in the theta direction, i.e., rotations per unit distance
                     frame_theta_p1_cob = frame_theta_p1.in_basis(curr_frame)
@@ -1022,6 +1089,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     rotvec = rot.as_rotvec()
                     r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
                     features = features + [lat.value, lon.value, r.value/d]
+                    feat_to_pts_map.append(ind)
 
                     # Curvatures in the tau1 direction, i.e., rotations per unit distance
                     frame_tau1_p1_cob = frame_tau1_p1.in_basis(curr_frame)
@@ -1038,6 +1106,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
                     rotvec = rot.as_rotvec()
                     r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
                     features = features + [lat.value, lon.value, r.value/d]
+                    feat_to_pts_map.append(ind)
 
     # Previous + 122 points * 12 features
     assert len(features) == 55*24 + 24*12 + 6*18 + 36*6 + 72*6 + 330*12 + 122*12
@@ -1047,6 +1116,10 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
         for level in [1]:
             curr_linear = crest_to_linear(theta)
             curr_frame = frames[levels.index(level)][curr_linear]
+            ind = out_pts.InsertNextPoint(curr_frame.x)
+            vert = vtk.vtkVertex()
+            vert.GetPointIds().SetId(0,ind)
+            out_cells.InsertNextCell(vert)
 
             # Location x change in the theta direction (length and direction)
             theta_p1 = crest_to_linear(theta+1)
@@ -1056,6 +1129,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             v = (frame_theta_p1.x - frame_theta_m1.x) / 2 
             r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
             features = features + [lat.value, lon.value, r.value]
+            feat_to_pts_map.append(ind)
 
             # Location x change in the tau1 direction (length and direction)
             tau1_top = theta_tau_to_linear(theta,1,0)
@@ -1065,7 +1139,8 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             frame_tau1_bot = frames[levels.index(level)][tau1_bot]
             v = (frame_tau1_top.x - frame_tau1_bot.x) / 2
             r, lat, lon = cartesian_to_spherical(v[0],v[1],v[2])
-            features = features + [lat.value, lon.value, r.value]   
+            features = features + [lat.value, lon.value, r.value]
+            feat_to_pts_map.append(ind)   
 
             # Curvatures in the theta direction, i.e., rotations per unit distance
             frame_theta_p1_cob = frame_theta_p1.in_basis(curr_frame)
@@ -1075,6 +1150,7 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             rotvec = rot.as_rotvec()
             r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
             features = features + [lat.value, lon.value, r.value/d]
+            feat_to_pts_map.append(ind)
 
             # Curvatures in the tau1 direction, i.e., rotations per unit distance
             frame_tau1_top_cob = frame_tau1_top.in_basis(curr_frame)
@@ -1084,11 +1160,15 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
             rotvec = rot.as_rotvec()
             r, lat, lon = cartesian_to_spherical(rotvec[0],rotvec[1], rotvec[2])
             features = features + [lat.value, lon.value, r.value/d]
+            feat_to_pts_map.append(ind)
 
     # Previous + 24 points * 6 features
     assert len(features) == 55*24 + 24*12 + 6*18 + 36*6 + 72*6 + 330*12 + 122*12 + 24*12
 
-    return features
+    out_pd.SetPoints(out_pts)
+    out_pd.SetVerts(out_cells)
+
+    return features, out_pd, feat_to_pts_map
 
   def euclideanize_all_blocks(sefl, feats):
     # All 3-tuples are in the form of [latitude,longitude,distance]
@@ -1137,13 +1217,19 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
     
 
 
-  def run(self, inputCSV):
+  def run(self, inputCSV, outputDirectory):
     reader = csv.reader(open(inputCSV))
     all_features = []
     labels = []
+    template = None
+    feat_map = []
     for json_file,group in reader:
       print(f"Processing {json_file}")
-      all_features.append(self.get_srep_features(json_file))
+      features, temp, temp_map = self.get_srep_features(json_file)
+      if not template:
+        template = temp
+        feat_map = temp_map
+      all_features.append(features)
       labels.append(int(group))
 
     euc_feats = self.euclideanize_all_blocks(np.array(all_features))
@@ -1152,25 +1238,53 @@ class SRepHypothesisTestingLogic(ScriptedLoadableModuleLogic):
     # Fit HotellingT2 estimator to one class then test on the other
     sig_count = 0
     total = 0
-    for i in range(0,euc_feats.shape[1],3):
-      total += 1
-      group0 = euc_feats[np.where( labels == 0 )[0],i:i+3]
-      group1 = euc_feats[np.where( labels == 1 )[0],i:i+3]
 
-      hotelling = HotellingT2()
-      hotelling.fit(group0)
+    sigArray = vtk.vtkFloatArray()
+    sigArray.SetNumberOfValues(template.GetNumberOfPoints())
+    sigArray.SetNumberOfComponents(1)
+    sigArray.SetName('Significance')
+    sigArray.Fill(0)
 
-      t2_score = hotelling.score(group1)
-      ucl = group0.shape[0] / (group0.shape[0] + 1) * hotelling.ucl_indep_
+    with open(os.path.join(outputDirectory,'significance_values.csv'), 'w') as f:
 
-      print(f"Do the training set and the test set come from the same "
-        f"distribution? {t2_score <= ucl}")
-      if t2_score > ucl:
-        sig_count += 1
+      for i in range(0,euc_feats.shape[1],3):
+        total += 1
+        group0 = euc_feats[np.where( labels == 0 )[0],i:i+3]
+        group1 = euc_feats[np.where( labels == 1 )[0],i:i+3]
+
+        hotelling = HotellingT2()
+        hotelling.fit(group0)
+
+        t2_score = hotelling.score(group1)
+        ucl = group0.shape[0] / (group0.shape[0] + 1) * hotelling.ucl_indep_
+
+        f.write(f"{i},{t2_score},{ucl}\n")
+
+        # A significant difference was found for this feature
+        if t2_score > ucl:
+          sig_count += 1
+          sigArray.SetValue( feat_map[i//3], 1 )
       
     print(f'Found {sig_count} significant features out of {total} total')
-    logging.info('Processing completed')
+    
+    template.GetPointData().AddArray(sigArray)
 
+    # Write results to specified folder
+    w = vtk.vtkXMLPolyDataWriter()
+    w.SetInputData(template)
+    w.SetFileName(os.path.join(outputDirectory,'significance_map.vtp'))
+    w.Update()
+
+    # Display results in Slicer
+    modelNode = slicer.modules.models.logic().AddModel(template)
+    modelNode.GetDisplayNode().SetRepresentation(0)
+    modelNode.GetDisplayNode().SetPointSize(5)
+    modelNode.GetDisplayNode().SetAndObserveColorNodeID('vtkMRMLColorTableNodeRed')
+    modelNode.GetDisplayNode().SetScalarVisibility(True)
+    modelNode.GetDisplayNode().SetActiveScalarName('Significance')
+    slicer.app.layoutManager().threeDWidget(0).threeDView().resetCamera()
+    
+    logging.info('Processing completed')
 
 #
 # SRepHypothesisTestingTest
